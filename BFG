@@ -1,0 +1,812 @@
+-- ============================================
+-- BFG MULTIFARM LITE (Marshmallow + Kentang)
+-- Compatible with Mobile & PC
+-- ============================================
+
+local Configuration = {
+    Autofarming = false,
+    AutoAntiDeath = true,
+    AutoRejoiner = true,
+    PerformanceSaver = false,
+    TimesRejoined = 0,
+    Runtime = 0,
+    CashMade = 0,
+    ChipsFed = 0,
+    MarshmallowsSold = 0,
+    Status = "Idle",
+    Apartment = nil,
+}
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local RPC = ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RPC")
+
+-- ============================================
+-- HELPER FUNCTIONS
+-- ============================================
+
+local function GetHumanoid()
+    local c = Player.Character
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function EquipTool(tool)
+    local h = GetHumanoid()
+    if h and tool then h:EquipTool(tool) end
+end
+
+local function UnequipTools()
+    local h = GetHumanoid()
+    if h then h:UnequipTools() end
+end
+
+local function GetCurrentCashAmount()
+    local ok, n = pcall(function()
+        local moneyFrame = PlayerGui:FindFirstChild("Main")
+        if moneyFrame then
+            local money = moneyFrame:FindFirstChild("Money")
+            if money then
+                local amount = money:FindFirstChild("Amount")
+                if amount then
+                    return tonumber(amount.Text:gsub("%D+", "")) or 0
+                end
+            end
+        end
+        return 0
+    end)
+    return (ok and n) or 0
+end
+
+local function GetCurrentCash()
+    return GetCurrentCashAmount()
+end
+
+local function GetCommaValue(n)
+    local s = tostring(math.floor(n))
+    while true do
+        local result, count = s:gsub("^(-?%d+)(%d%d%d)", "%1,%2")
+        s = result
+        if count == 0 then break end
+    end
+    return s
+end
+
+local function FormatRuntime(seconds)
+    return string.format("%02d:%02d:%02d",
+        math.floor(seconds / 3600),
+        math.floor((seconds % 3600) / 60),
+        seconds % 60
+    )
+end
+
+local function WaitForReady()
+    repeat task.wait(0.1) until Configuration.Autofarming
+end
+
+local Random = Random.new()
+
+-- ============================================
+-- LOCATIONS
+-- ============================================
+
+local Locations = {
+    SafeZone = Vector3.new(-478.840, 24.000, 389.200),
+    HotChipsMan = Vector3.new(-41.000, 3.000, -25.000),
+    BuyMarsh = Vector3.new(512.820, 4.000, 595.580),
+    BuyPotato = Vector3.new(-759.920, -0.025, -195.870),
+    Healing = Vector3.new(-769.000, 6.000, 654.000),
+    Clipboard = Vector3.new(-479.230, 5.342, -433.270),
+    PotatoCutter = Vector3.new(-456.320, 1.870, -466.840),
+    PlasticBagLab = Vector3.new(-456.280, 1.654, -472.670),
+    FlourBowl = Vector3.new(-494.640, 1.579, -518.580),
+}
+
+-- ============================================
+-- TELEPORT FUNCTION
+-- ============================================
+
+local function TeleportTo(position)
+    if not Player.Character then return false end
+    local hrp = Player.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    
+    hrp.CFrame = CFrame.new(position)
+    task.wait(0.1)
+    
+    if (hrp.Position - position).Magnitude > 10 then
+        hrp.CFrame = CFrame.new(position + Vector3.new(0, 5, 0))
+        task.wait(0.1)
+        hrp.CFrame = CFrame.new(position)
+    end
+    
+    return true
+end
+
+-- ============================================
+-- APARTMENT FUNCTIONS
+-- ============================================
+
+local function FindAvailableApartments()
+    local Available = {}
+    local Apartments = { "WH1", "BH3", "BH2", "BH4", "BH1", "LT1" }
+    local CasinoApartments = { "Home 1", "Home 2", "Home 3", "Home 4" }
+    
+    for _, obj in next, Workspace:WaitForChild("Map").APTS:GetChildren() do
+        if obj:IsA("Model") then
+            local board = obj:FindFirstChild("Board", true)
+            if board then
+                local text = board.name.SurfaceGui.TextLabel.Text
+                if text == "VACANT" or text == Player.Name then
+                    table.insert(Available, obj)
+                end
+            end
+        end
+    end
+    return Available
+end
+
+local function GetApartment()
+    local apts = FindAvailableApartments()
+    if #apts == 0 then return nil end
+    return apts[Random:NextInteger(1, #apts)]
+end
+
+local function StartMarshmallowFarm()
+    WaitForReady()
+    Configuration.Status = "[APARTMENT] Finding apartment..."
+    
+    local apt = GetApartment()
+    if not apt then
+        Configuration.Status = "[APARTMENT] None available!"
+        return false
+    end
+    
+    Configuration.Apartment = apt
+    Configuration.Status = "[APARTMENT] Secured!"
+    return true
+end
+
+-- ============================================
+-- MARSHMALLOW FUNCTIONS
+-- ============================================
+
+local function PourWater()
+    WaitForReady()
+    local apt = Configuration.Apartment
+    if not apt then return false end
+    
+    local stove = apt:FindFirstChild("Cooking Pot")
+    if not stove then
+        stove = apt:FindFirstChild("Interior")
+        if stove then stove = stove:FindFirstChild("Cooking Pot") end
+    end
+    
+    if not stove then return false end
+    
+    local prompt = stove:FindFirstChild("Attachment")
+    if prompt then prompt = prompt:FindFirstChild("ProximityPrompt") end
+    if not prompt then return false end
+    
+    Configuration.Status = "[MARSHMALLOW] Pouring water..."
+    TeleportTo(stove.Position)
+    task.wait(0.5)
+    
+    local water = Player:FindFirstChild("Backpack"):FindFirstChild("Water")
+    if water then
+        EquipTool(water)
+        task.wait(0.3)
+        pcall(function() prompt:Fire() end)
+        task.wait(0.5)
+        UnequipTools()
+    end
+    
+    return true
+end
+
+local function AddSugarAndGelatin()
+    WaitForReady()
+    local apt = Configuration.Apartment
+    if not apt then return false end
+    
+    local stove = apt:FindFirstChild("Cooking Pot")
+    if not stove then
+        stove = apt:FindFirstChild("Interior")
+        if stove then stove = stove:FindFirstChild("Cooking Pot") end
+    end
+    
+    if not stove then return false end
+    
+    local prompt = stove:FindFirstChild("Attachment")
+    if prompt then prompt = prompt:FindFirstChild("ProximityPrompt") end
+    if not prompt then return false end
+    
+    Configuration.Status = "[MARSHMALLOW] Adding sugar..."
+    local sugar = Player:FindFirstChild("Backpack"):FindFirstChild("Sugar Block Bag")
+    if sugar then
+        EquipTool(sugar)
+        task.wait(0.3)
+        pcall(function() prompt:Fire() end)
+        task.wait(0.5)
+        UnequipTools()
+    end
+    
+    Configuration.Status = "[MARSHMALLOW] Adding gelatin..."
+    local gelatin = Player:FindFirstChild("Backpack"):FindFirstChild("Gelatin")
+    if gelatin then
+        EquipTool(gelatin)
+        task.wait(0.3)
+        pcall(function() prompt:Fire() end)
+        task.wait(0.5)
+        UnequipTools()
+    end
+    
+    return true
+end
+
+local function SellMarshmallow()
+    WaitForReady()
+    Configuration.Status = "[MARSHMALLOW] Waiting to cook..."
+    task.wait(60)
+    
+    Configuration.Status = "[MARSHMALLOW] Selling..."
+    
+    local lamont = Workspace:FindFirstChild("Folders")
+    if lamont then lamont = lamont:FindFirstChild("NPCs") end
+    if lamont then lamont = lamont:FindFirstChild("Lamont Bell") end
+    
+    if not lamont then
+        TeleportTo(Locations.BuyMarsh)
+        task.wait(0.5)
+        lamont = Workspace:FindFirstChild("Folders")
+        if lamont then lamont = lamont:FindFirstChild("NPCs") end
+        if lamont then lamont = lamont:FindFirstChild("Lamont Bell") end
+    end
+    
+    if not lamont then return false end
+    
+    local prompt = lamont:FindFirstChild("UpperTorso")
+    if prompt then prompt = prompt:FindFirstChild("ProximityPrompt") end
+    if not prompt then return false end
+    
+    local backpack = Player:FindFirstChild("Backpack")
+    if backpack then
+        for _, item in pairs(backpack:GetChildren()) do
+            if tostring(item):find("Marshmallow") then
+                TeleportTo(Locations.BuyMarsh)
+                task.wait(0.3)
+                EquipTool(item)
+                task.wait(0.3)
+                pcall(function() prompt:Fire() end)
+                task.wait(0.3)
+                UnequipTools()
+                Configuration.MarshmallowsSold = Configuration.MarshmallowsSold + 1
+            end
+        end
+    end
+    
+    return true
+end
+
+-- ============================================
+-- POTATO CHIPS FUNCTIONS
+-- ============================================
+
+local function MakePotatoChips()
+    WaitForReady()
+    Configuration.Status = "[POTATO] Starting..."
+    
+    local storeRemote = ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("StorePurchase")
+    
+    TeleportTo(Locations.BuyPotato)
+    task.wait(0.5)
+    storeRemote:FireServer("Flour")
+    task.wait(0.3)
+    storeRemote:FireServer("Potato")
+    task.wait(0.3)
+    
+    Configuration.Status = "[POTATO] Claiming task..."
+    local clipboard = Workspace.Map.Locations["The Laboratory"].Prompts.Clipboard
+    local prompt = clipboard.ProximityPrompt
+    TeleportTo(Locations.Clipboard)
+    task.wait(0.3)
+    pcall(function() prompt:Fire() end)
+    task.wait(0.5)
+    
+    Configuration.Status = "[POTATO] Cutting potato..."
+    local cutter = Workspace.Map.Locations["The Laboratory"]["Cutting Boards"]["Potato Cutter"].Model.Union
+    prompt = cutter.Attachment.ProximityPrompt
+    TeleportTo(Locations.PotatoCutter)
+    task.wait(0.3)
+    
+    local potato = Player:FindFirstChild("Backpack"):FindFirstChild("Potato")
+    if potato then
+        EquipTool(potato)
+        task.wait(0.3)
+        pcall(function() prompt:Fire() end)
+        task.wait(0.3)
+        UnequipTools()
+    end
+    
+    Configuration.Status = "[POTATO] Bagging potato..."
+    local bag = Workspace.Map.Locations["The Laboratory"].Prompts["Plastic Bag"]
+    prompt = bag.Attachment.ProximityPrompt
+    TeleportTo(Locations.PlasticBagLab)
+    task.wait(0.3)
+    pcall(function() prompt:Fire() end)
+    task.wait(0.5)
+    
+    Configuration.Status = "[POTATO] Mixing flour and potato..."
+    local bowl = Workspace.Map.Locations["The Laboratory"].Bowls:FindFirstChildOfClass("UnionOperation")
+    prompt = bowl.ProximityPrompt
+    TeleportTo(Locations.FlourBowl)
+    task.wait(0.3)
+    
+    local flour = Player:FindFirstChild("Backpack"):FindFirstChild("Flour")
+    if flour then
+        EquipTool(flour)
+        task.wait(0.3)
+        pcall(function() prompt:Fire() end)
+        task.wait(0.3)
+        UnequipTools()
+    end
+    
+    Configuration.Status = "[POTATO] Cooking in pot..."
+    local pots = Workspace.Map.Locations["The Laboratory"].Pots
+    for _, pot in pairs(pots:GetChildren()) do
+        if pot:IsA("UnionOperation") then
+            prompt = pot.ProximityPrompt
+            if prompt then
+                TeleportTo(pot.Position)
+                task.wait(0.3)
+                pcall(function() prompt:Fire() end)
+                task.wait(1)
+                break
+            end
+        end
+    end
+    
+    Configuration.Status = "[POTATO] Waiting 120 seconds..."
+    task.wait(120)
+    
+    Configuration.Status = "[POTATO] Converting to hot chips..."
+    TeleportTo(Locations.HotChipsMan)
+    task.wait(0.5)
+    
+    local poorGuy = Workspace.Folders.NPCs["Poor Guy"]
+    if poorGuy then
+        prompt = poorGuy.UpperTorso.ProximityPrompt
+        local chips = Player:FindFirstChild("Backpack"):FindFirstChild("Potato Chips")
+        if chips then
+            EquipTool(chips)
+            task.wait(0.3)
+            pcall(function() prompt:Fire() end)
+            task.wait(0.3)
+            UnequipTools()
+        end
+    end
+    
+    Configuration.Status = "[POTATO] Feeding homeless people..."
+    local homelessList = Workspace.Folders.HomelessPeople
+    for _, homeless in pairs(homelessList:GetChildren()) do
+        local hotChips = Player:FindFirstChild("Backpack"):FindFirstChild("Hot Chips")
+        if not hotChips then break end
+        
+        local torso = homeless:FindFirstChild("UpperTorso")
+        if torso then
+            prompt = torso.ProximityPrompt
+            TeleportTo(torso.Position)
+            task.wait(0.3)
+            EquipTool(hotChips)
+            task.wait(0.3)
+            pcall(function() prompt:Fire() end)
+            task.wait(0.3)
+            UnequipTools()
+            Configuration.ChipsFed = Configuration.ChipsFed + 1
+        end
+    end
+    
+    return true
+end
+
+-- ============================================
+-- MAIN AUTOFARM LOOP
+-- ============================================
+
+local autofarmRunning = false
+
+local function MainAutofarm()
+    if autofarmRunning then return end
+    autofarmRunning = true
+    
+    while Configuration.Autofarming do
+        WaitForReady()
+        
+        local aptOk = StartMarshmallowFarm()
+        if not aptOk then
+            task.wait(5)
+            continue
+        end
+        
+        PourWater()
+        AddSugarAndGelatin()
+        SellMarshmallow()
+        
+        MakePotatoChips()
+        
+        Configuration.Status = "[CYCLE] Complete! Restarting..."
+        task.wait(2)
+    end
+    
+    autofarmRunning = false
+end
+
+-- ============================================
+-- REJOIN FUNCTION
+-- ============================================
+
+local function DoRejoin()
+    if not Configuration.AutoRejoiner then return end
+    Configuration.Autofarming = false
+    Configuration.TimesRejoined = Configuration.TimesRejoined + 1
+    task.wait(1)
+    TeleportService:Teleport(10179538382)
+end
+
+-- ============================================
+-- ANTI DEATH
+-- ============================================
+
+local function SetupAntiDeath(char)
+    local hum = char:FindFirstChild("Humanoid")
+    if not hum then return end
+    
+    hum.HealthChanged:Connect(function(hp)
+        if not Configuration.AutoAntiDeath then return end
+        if hp > 0 and hp < 95 then
+            Configuration.Status = "[ANTI-DEATH] Healing!"
+            TeleportTo(Locations.Healing)
+        end
+    end)
+end
+
+-- ============================================
+-- MOBILE UI
+-- ============================================
+
+local function CreateMobileUI()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "BFG_UI"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = PlayerGui
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 350, 0, 480)
+    mainFrame.Position = UDim2.new(0.5, -175, 0.5, -240)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = screenGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = mainFrame
+    
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 40)
+    header.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+    header.BackgroundTransparency = 0
+    header.BorderSizePixel = 0
+    header.Parent = mainFrame
+    
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 12)
+    headerCorner.Parent = header
+    
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -60, 1, 0)
+    title.Position = UDim2.new(0, 10, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "⚡ BFG FARM LITE"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 16
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Font = Enum.Font.GothamBold
+    title.Parent = header
+    
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 30, 0, 30)
+    closeBtn.Position = UDim2.new(1, -40, 0, 5)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    closeBtn.BackgroundTransparency = 0
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.TextSize = 16
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.Parent = header
+    
+    local closeCorner = Instance.new("UICorner")
+    closeCorner.CornerRadius = UDim.new(0, 6)
+    closeCorner.Parent = closeBtn
+    
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, 0, 1, -40)
+    scroll.Position = UDim2.new(0, 0, 0, 40)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 3
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 700)
+    scroll.Parent = mainFrame
+    
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.Padding = UDim.new(0, 6)
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Parent = scroll
+    
+    local function CreateSection(text)
+        local section = Instance.new("Frame")
+        section.Size = UDim2.new(1, -20, 0, 28)
+        section.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+        section.BackgroundTransparency = 0
+        section.BorderSizePixel = 0
+        section.Parent = scroll
+        
+        local sectionCorner = Instance.new("UICorner")
+        sectionCorner.CornerRadius = UDim.new(0, 6)
+        sectionCorner.Parent = section
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -10, 1, 0)
+        label.Position = UDim2.new(0, 10, 0, 0)
+        label.BackgroundTransparency = 1
+        label.Text = text
+        label.TextColor3 = Color3.fromRGB(180, 180, 220)
+        label.TextSize = 13
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Font = Enum.Font.GothamSemibold
+        label.Parent = section
+    end
+    
+    local function CreateToggle(labelText, default, callback)
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1, -20, 0, 35)
+        frame.BackgroundColor3 = Color3.fromRGB(25, 25, 40)
+        frame.BackgroundTransparency = 0
+        frame.BorderSizePixel = 0
+        frame.Parent = scroll
+        
+        local frameCorner = Instance.new("UICorner")
+        frameCorner.CornerRadius = UDim.new(0, 6)
+        frameCorner.Parent = frame
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(0.6, -10, 1, 0)
+        label.Position = UDim2.new(0, 10, 0, 0)
+        label.BackgroundTransparency = 1
+        label.Text = labelText
+        label.TextColor3 = Color3.fromRGB(220, 220, 240)
+        label.TextSize = 13
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Font = Enum.Font.Gotham
+        label.Parent = frame
+        
+        local toggleBtn = Instance.new("TextButton")
+        toggleBtn.Size = UDim2.new(0, 50, 0, 26)
+        toggleBtn.Position = UDim2.new(1, -60, 0.5, -13)
+        toggleBtn.BackgroundColor3 = default and Color3.fromRGB(60, 200, 100) or Color3.fromRGB(80, 80, 80)
+        toggleBtn.BackgroundTransparency = 0
+        toggleBtn.BorderSizePixel = 0
+        toggleBtn.Text = default and "ON" or "OFF"
+        toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        toggleBtn.TextSize = 11
+        toggleBtn.Font = Enum.Font.GothamBold
+        toggleBtn.Parent = frame
+        
+        local toggleCorner = Instance.new("UICorner")
+        toggleCorner.CornerRadius = UDim.new(0, 13)
+        toggleCorner.Parent = toggleBtn
+        
+        local isOn = default
+        
+        toggleBtn.MouseButton1Click:Connect(function()
+            isOn = not isOn
+            toggleBtn.BackgroundColor3 = isOn and Color3.fromRGB(60, 200, 100) or Color3.fromRGB(80, 80, 80)
+            toggleBtn.Text = isOn and "ON" or "OFF"
+            if callback then callback(isOn) end
+        end)
+    end
+    
+    local function CreateButton(labelText, callback)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -20, 0, 35)
+        btn.BackgroundColor3 = Color3.fromRGB(50, 50, 80)
+        btn.BackgroundTransparency = 0
+        btn.BorderSizePixel = 0
+        btn.Text = labelText
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.TextSize = 13
+        btn.Font = Enum.Font.GothamSemibold
+        btn.Parent = scroll
+        
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 6)
+        btnCorner.Parent = btn
+        
+        btn.MouseButton1Click:Connect(callback)
+    end
+    
+    local function CreateLabel(text, color)
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -20, 0, 25)
+        label.BackgroundTransparency = 1
+        label.Text = text
+        label.TextColor3 = color or Color3.fromRGB(200, 200, 220)
+        label.TextSize = 12
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Font = Enum.Font.Gotham
+        label.Parent = scroll
+        return label
+    end
+-- BUILD UI
+    CreateSection("📋 MAIN SETTINGS")
+    
+    CreateToggle("▶ Autofarming", false, function(v)
+        Configuration.Autofarming = v
+        if v then task.spawn(MainAutofarm) end
+    end)
+    
+    CreateToggle("🛡️ Anti Death", true, function(v)
+        Configuration.AutoAntiDeath = v
+    end)
+    
+    CreateToggle("🔄 Auto Rejoiner", true, function(v)
+        Configuration.AutoRejoiner = v
+    end)
+    
+    CreateSection("📊 STATISTICS")
+    
+    local statusLabel = CreateLabel("📌 Status: Idle", Color3.fromRGB(100, 200, 255))
+    local runtimeLabel = CreateLabel("⏰ Runtime: 00:00:00")
+    local cashLabel = CreateLabel("💰 Cash: $0")
+    local chipsLabel = CreateLabel("🍟 Chips Fed: 0")
+    local marshLabel = CreateLabel("🧂 Marshmallows Sold: 0")
+    local rejoinLabel = CreateLabel("🔄 Times Rejoined: 0")
+    
+    CreateSection("🚗 ACTIONS")
+    
+    CreateButton("🛒 Spawn DirtBike ($35K)", function()
+        RPC:FireServer(buffer.fromstring("\\001"), "Purchase", "DirtBike")
+    end)
+    
+    CreateButton("🔄 Rejoin Game", function()
+        DoRejoin()
+    end)
+    
+    closeBtn.MouseButton1Click:Connect(function()
+        screenGui:Destroy()
+    end)
+    
+    -- DRAG
+    local dragging = false
+    local dragStartX, dragStartY = 0, 0
+    
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStartX = input.Position.X
+            dragStartY = input.Position.Y
+        end
+    end)
+    
+    header.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local dx = input.Position.X - dragStartX
+            local dy = input.Position.Y - dragStartY
+            mainFrame.Position = UDim2.new(0.5, -175 + dx, 0.5, -240 + dy)
+        end
+    end)
+    
+    header.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+
+-- UPDATE STATS
+    task.spawn(function()
+        while task.wait(1) do
+            local cash = GetCurrentCash()
+            statusLabel.Text = "📌 Status: " .. Configuration.Status
+            runtimeLabel.Text = "⏰ Runtime: " .. FormatRuntime(Configuration.Runtime)
+            cashLabel.Text = "💰 Cash: $" .. GetCommaValue(cash)
+            chipsLabel.Text = "🍟 Chips Fed: " .. Configuration.ChipsFed
+            marshLabel.Text = "🧂 Marshmallows Sold: " .. Configuration.MarshmallowsSold
+            rejoinLabel.Text = "🔄 Times Rejoined: " .. Configuration.TimesRejoined
+        end
+    end)
+end
+
+-- ============================================
+-- INITIALIZATION
+-- ============================================
+
+if Player.Character then
+    SetupAntiDeath(Player.Character)
+end
+
+Player.CharacterAdded:Connect(SetupAntiDeath)
+
+Player.CharacterAdded:Connect(function(char)
+    local hum = char:WaitForChild("Humanoid")
+    hum.Died:Connect(function()
+        if Configuration.Autofarming and Configuration.AutoRejoiner then
+            task.wait(2)
+            DoRejoin()
+        end
+    end)
+end)
+
+task.spawn(function()
+    local startTime = os.clock()
+    local startCash = GetCurrentCashAmount()
+    
+    while task.wait(1) do
+        Configuration.Runtime = math.floor(os.clock() - startTime)
+        Configuration.CashMade = GetCurrentCashAmount() - startCash
+    end
+end)
+
+task.spawn(function()
+    local lastCash = 0
+    local lastChange = os.clock()
+    
+    task.wait(60)
+    lastCash = GetCurrentCashAmount()
+    
+    while task.wait(30) do
+        if not Configuration.Autofarming then
+            lastCash = GetCurrentCashAmount()
+            lastChange = os.clock()
+            continue
+        end
+        
+        local currentCash = GetCurrentCashAmount()
+        if currentCash ~= lastCash then
+            lastCash = currentCash
+            lastChange = os.clock()
+        end
+        
+        if os.clock() - lastChange >= 300 then
+            Configuration.Status = "[STUCK] Rejoining..."
+            DoRejoin()
+            return
+        end
+    end
+end)
+
+Player.Idled:Connect(function()
+    if Configuration.Autofarming then
+        local vInput = game:GetService("VirtualInputManager")
+        pcall(function()
+            vInput:SendKeyEvent(true, "w", false, game)
+            task.wait(0.1)
+            vInput:SendKeyEvent(false, "w", false, game)
+        end)
+    end
+end)
+
+task.wait(1)
+CreateMobileUI()
+
+print("========================================")
+print("  ✅ BFG MULTIFARM LITE")
+print("  ✅ Marshmallow + Potato Chips")
+print("  ✅ Compatible with Mobile")
+print("  ✅ Status: Loaded")
+print("========================================")
