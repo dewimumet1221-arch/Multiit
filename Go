@@ -1,0 +1,1401 @@
+-- ============================================
+-- WANZZ PROJECT - BFG MULTIFARM (FINAL FIX)
+-- Marshmallow + Potato Chips ONLY
+-- ROTASI KOORDINAT HOMELESS + MASK + STABIL
+-- UI BARU + DRAG
+-- ============================================
+
+if getgenv().WANZZ_LOADED then return end
+getgenv().WANZZ_LOADED = true
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local LogService = game:GetService("LogService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local RPC = ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RPC")
+
+-- ============================================
+-- ANTI DETEKSI
+-- ============================================
+pcall(function()
+    if LogService then LogService:SetLoggingEnabled(false) end
+    if LogService then LogService:Clear() end
+    for _, obj in pairs(game:GetDescendants()) do
+        if obj:IsA("Script") or obj:IsA("LocalScript") then
+            local name = obj.Name:lower()
+            if name:find("scan") or name:find("anticheat") or name:find("antiban") or name:find("detect") then
+                obj.Disabled = true
+            end
+        end
+    end
+end)
+
+-- ============================================
+-- KONFIGURASI
+-- ============================================
+local Configuration = {
+    Main_Settings = {
+        Autofarming = false,
+        AutoAntiDeath = true,
+        AutoRejoiner = true,
+    },
+    Statistics = {
+        TimesRejoined = 0,
+        Runtime = 0,
+        CashMade = 0,
+        ChipsFed = 0,
+        MarshmallowsSold = 0,
+        CyclesCompleted = 0,
+    },
+    State = {
+        Status = "Idle",
+        BikeSitting = false,
+        BikeSpawned = false,
+        RespawnPending = false,
+        Apartment = nil,
+        LastCoordIndex = 0,
+        MaskOwned = false,
+    },
+}
+
+-- ============================================
+-- DAFTAR KOORDINAT HOMELESS (12 TITIK)
+-- ============================================
+local HomelessCoords = {
+    Vector3.new(-315.35, 3.72, -361.56),
+    Vector3.new(-273.52, 3.85, -211.32),
+    Vector3.new(1102.42, 3.36, 527.05),
+    Vector3.new(52.89, 3.72, -425.36),
+    Vector3.new(152.88, 3.73, -210.08),
+    Vector3.new(-522.75, -7.86, -165.08),
+    Vector3.new(65.12, 3.73, 68.10),
+    Vector3.new(26.04, 3.73, 217.89),
+    Vector3.new(520.08, 3.87, -295.52),
+    Vector3.new(699.28, 3.72, -427.05),
+    Vector3.new(900.03, 3.94, -283.12),
+    Vector3.new(874.89, 3.73, -63.02)
+}
+local TotalCoords = #HomelessCoords
+
+-- ============================================
+-- HELPER FUNCTIONS
+-- ============================================
+local function GetHumanoid()
+    local c = Player.Character
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function EquipTool(tool)
+    local h = GetHumanoid()
+    if h and tool then pcall(function() h:EquipTool(tool) end) end
+end
+
+local function UnequipTools()
+    local h = GetHumanoid()
+    if h then pcall(function() h:UnequipTools() end) end
+end
+
+local Random = Random.new()
+
+local function GetCurrentCashAmount()
+    local ok, n = pcall(function()
+        local main = PlayerGui:FindFirstChild("Main")
+        if main then
+            local money = main:FindFirstChild("Money")
+            if money then
+                local amount = money:FindFirstChild("Amount")
+                if amount then
+                    return tonumber((amount.Text:gsub("%D+", ""))) or 0
+                end
+            end
+        end
+        return 0
+    end)
+    return (ok and n) or 0
+end
+
+local function GetCommaValue(n)
+    local s = tostring(math.floor(n))
+    while true do
+        local result, count = s:gsub("^(-?%d+)(%d%d%d)", "%1,%2")
+        s = result
+        if count == 0 then break end
+    end
+    return s
+end
+
+local function FormatRuntime(seconds)
+    return string.format("%02d:%02d:%02d",
+        math.floor(seconds / 3600),
+        math.floor((seconds % 3600) / 60),
+        seconds % 60
+    )
+end
+
+local function WaitForReady()
+    repeat task.wait() until Configuration.Main_Settings.Autofarming
+end
+
+local function CountHotChips()
+    local backpack = Player:FindFirstChild("Backpack")
+    if not backpack then return 0 end
+    local count = 0
+    for _, obj in pairs(backpack:GetChildren()) do
+        if obj.Name == "Hot Chips" then count = count + 1 end
+    end
+    return count
+end
+
+-- ============================================
+-- STEALTH TELEPORT (TWEEN)
+-- ============================================
+local function DirtBikeTeleportStealth(TargetPosition)
+    local c = Player.Character
+    if not c then return false end
+
+    local h = c:FindFirstChild("Humanoid")
+    if not h then return false end
+
+    if not h.SeatPart then
+        Configuration.State.Status = "[BIKE] Re-sitting..."
+        if not SpawnAndSitOnBike() then return false end
+        task.wait(0.3)
+    end
+
+    local DriveSeat = h.SeatPart
+    if not DriveSeat or DriveSeat.Name ~= "DriveSeat" then return false end
+
+    local Vehicle = DriveSeat.Parent
+    if not Vehicle then return false end
+
+    local startPos = Vehicle.PrimaryPart.Position
+    local distance = (startPos - TargetPosition).Magnitude
+    
+    if distance > 50 then
+        local steps = math.min(math.floor(distance / 30), 5)
+        for i = 1, steps do
+            local fraction = i / steps
+            local midPos = startPos:Lerp(TargetPosition, fraction)
+            pcall(function()
+                Vehicle:PivotTo(CFrame.new(midPos))
+            end)
+            task.wait(0.05)
+        end
+    end
+    
+    pcall(function()
+        Vehicle:PivotTo(CFrame.new(TargetPosition))
+        for _, Object in pairs(Vehicle:GetDescendants()) do
+            if Object:IsA("BasePart") then Object.Anchored = false end
+        end
+        task.wait(0.51)
+        for _, Object in pairs(Vehicle:GetDescendants()) do
+            if Object:IsA("BasePart") then Object.Anchored = true end
+        end
+    end)
+
+    return true
+end
+
+local DirtBikeTeleport = DirtBikeTeleportStealth
+
+-- ============================================
+-- SPAWN & SIT ON BIKE
+-- ============================================
+local function SpawnAndSitOnBike()
+    local BikeName = string.format("%s's Car", Player.Name)
+    local ExistingBike = Workspace:FindFirstChild(BikeName)
+
+    if ExistingBike and ExistingBike:FindFirstChild("DriveSeat") and ExistingBike.DriveSeat.Occupant then
+        Configuration.State.BikeSitting = true
+        Configuration.State.BikeSpawned = true
+        return true
+    end
+
+    Configuration.State.Status = "[BIKE] Spawning..."
+    local Bike = Workspace:FindFirstChild(BikeName)
+
+    if not Bike then
+        RPC:FireServer(buffer.fromstring("\001"), "Spawn", "DirtBike")
+        local SpawnStart = os.clock()
+        repeat task.wait(0.1) until Workspace:FindFirstChild(BikeName) or (os.clock() - SpawnStart) > 4
+        Bike = Workspace:FindFirstChild(BikeName)
+    end
+
+    if not Bike then
+        Configuration.State.Status = "[BIKE] Failed to spawn"
+        return false
+    end
+
+    local DriveSeat = Bike:WaitForChild("DriveSeat")
+    UnequipTools()
+    Configuration.State.RespawnPending = true
+
+    local HumanoidRootPart = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    if HumanoidRootPart then
+        HumanoidRootPart.CFrame = CFrame.new(67^2, 10^10, 67^2)
+    end
+
+    Player.CharacterAdded:Wait()
+    local Character = Player.Character
+    HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+
+    local TargetCFrame = DriveSeat.CFrame * CFrame.new(3, 1, 0)
+    task.wait(2)
+    for _ = 1, 5 do
+        if HumanoidRootPart then
+            HumanoidRootPart.CFrame = TargetCFrame
+        end
+        task.wait(0.05)
+    end
+    task.wait(2.5)
+
+    local Prompt = DriveSeat:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if not Prompt then
+        local Attachment = DriveSeat:FindFirstChild("Attachment")
+        if Attachment then Prompt = Attachment:FindFirstChild("ProximityPrompt") end
+    end
+
+    if Prompt then
+        pcall(function()
+            Prompt.HoldDuration = 0
+            Prompt.RequiresLineOfSight = false
+            Prompt.MaxActivationDistance = 9e9
+        end)
+        fireproximityprompt(Prompt)
+    end
+
+    task.wait(1)
+    Configuration.State.RespawnPending = false
+    Configuration.State.BikeSitting = true
+    Configuration.State.BikeSpawned = true
+    return true
+end
+
+-- ============================================
+-- LOKASI
+-- ============================================
+local Locations = {
+    SafeZone      = Vector3.new(-478.840, 24.000,  389.200),
+    HotChipsMan   = Vector3.new( -41.000,  3.000,  -25.000),
+    BuyMarsh      = Vector3.new(510.817, 4.581, 601.048),
+    BuyPotato     = Vector3.new(-759.197, 3.489, -194.846),
+    Healing       = Vector3.new(-769.000,  6.000,  654.000),
+    Clipboard     = Vector3.new(-477.803, 4.855, -435.559),
+    PotatoCutter  = Vector3.new(-456.320,  3.870, -466.840),
+    PlasticBagLab = Vector3.new(-456.280,  3.654, -472.670),
+    FlourBowl     = Vector3.new(-494.640,  3.579, -518.580),
+    SkiMask       = Vector3.new(-366.980, 0.528, -320.630),
+}
+
+-- ============================================
+-- LOKASI
+-- ============================================
+local Locations = {
+    SafeZone      = Vector3.new(-478.840, 24.000,  389.200),
+    HotChipsMan   = Vector3.new( -41.000,  3.000,  -25.000),
+    BuyMarsh      = Vector3.new(510.817, 4.581, 601.048),
+    BuyPotato     = Vector3.new(-759.197, 3.489, -194.846),
+    Healing       = Vector3.new(-769.000,  6.000,  654.000),
+    Clipboard     = Vector3.new(-477.803, 4.855, -435.559),
+    PotatoCutter  = Vector3.new(-456.320,  3.870, -466.840),
+    PlasticBagLab = Vector3.new(-456.280,  3.654, -472.670),
+    FlourBowl     = Vector3.new(-494.640,  3.579, -518.580),
+    SkiMask       = Vector3.new(-366.980, 0.528, -320.630),
+}
+
+-- ============================================
+-- FUNGSI BELI SKI MASK
+-- ============================================
+local function BuySkiMask()
+    WaitForReady()
+    local CurrentChar = Player.Character
+    if not CurrentChar then return end
+    if CurrentChar:FindFirstChild("White Ski Mask") then
+        Configuration.State.MaskOwned = true
+        return
+    end
+
+    local backpack = Player:FindFirstChild("Backpack")
+    if backpack and backpack:FindFirstChild("White Ski Mask") then
+        EquipTool(backpack:FindFirstChild("White Ski Mask"))
+        task.wait(0.05)
+        RPC:FireServer(buffer.fromstring("\005"), Player.Character:WaitForChild("White Ski Mask"))
+        task.wait(0.05)
+        UnequipTools()
+        Configuration.State.MaskOwned = true
+        return
+    end
+
+    Configuration.State.Status = "[MASK] Buying Ski Mask..."
+    DirtBikeTeleport(Locations.SkiMask)
+    task.wait(0.5)
+
+    local StoreRemote = ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("StorePurchase")
+    local attempts = 0
+    repeat
+        pcall(function()
+            StoreRemote:FireServer("White Ski Mask")
+        end)
+        task.wait(0.5)
+        attempts = attempts + 1
+        backpack = Player:FindFirstChild("Backpack")
+    until (backpack and backpack:FindFirstChild("White Ski Mask")) or attempts >= 10
+
+    if backpack and backpack:FindFirstChild("White Ski Mask") then
+        EquipTool(backpack:FindFirstChild("White Ski Mask"))
+        task.wait(0.05)
+        RPC:FireServer(buffer.fromstring("\005"), Player.Character:WaitForChild("White Ski Mask"))
+        task.wait(0.05)
+        UnequipTools()
+        Configuration.State.MaskOwned = true
+        Configuration.State.Status = "[MASK] Ski Mask obtained and equipped"
+    else
+        Configuration.State.Status = "[MASK] Failed to buy Ski Mask"
+    end
+end
+
+-- ============================================
+-- MARSHMALLOW FUNCTIONS (ringkas)
+-- ============================================
+local function ScavengeInventory()
+    UnequipTools()
+    local Backpack = Player:FindFirstChild("Backpack")
+    if not Backpack then return 0,0,0,0,0 end
+    local Potato, Flour, Water, Gelatin, SugarBlockBag = 0,0,0,0,0
+    for _, Object in next, Backpack:GetChildren() do
+        if Object.Name == "Potato" then Potato = Potato + 1 end
+        if Object.Name == "Flour" then Flour = Flour + 1 end
+        if Object.Name == "Water" then Water = Water + 1 end
+        if Object.Name == "Gelatin" then Gelatin = Gelatin + 1 end
+        if Object.Name == "Sugar Block Bag" then SugarBlockBag = SugarBlockBag + 1 end
+    end
+    return Potato, Flour, Water, Gelatin, SugarBlockBag
+end
+
+local function PurchaseMarshmallowIngredients()
+    WaitForReady()
+    local _, _, Water, Gelatin, SugarBlockBag = ScavengeInventory()
+    if Water >= 1 and Gelatin >= 1 and SugarBlockBag >= 1 then return true end
+    local MarshRemote = ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("StorePurchase")
+    DirtBikeTeleport(Locations.BuyMarsh)
+    Configuration.State.Status = "[MARSH] Buying ingredients"
+    task.wait(0.5)
+    if Water < 1 then pcall(function() MarshRemote:FireServer("Water") end) task.wait(0.5) end
+    if Gelatin < 1 then pcall(function() MarshRemote:FireServer("Gelatin") end) task.wait(0.5) end
+    if SugarBlockBag < 1 then pcall(function() MarshRemote:FireServer("Sugar Block Bag") end) task.wait(0.5) end
+    return true
+end
+
+local function FindAvailableApartments()
+    local Available, Owned = {}, {}
+    local Apartments = { "WH1", "BH3", "BH2", "BH4", "BH1", "LT1" }
+    local CasinoApartments = { "Home 1", "Home 2", "Home 3", "Home 4" }
+    local map = Workspace:FindFirstChild("Map")
+    if not map then return Available, "Not Owned" end
+    local apts = map:FindFirstChild("APTS")
+    if not apts then return Available, "Not Owned" end
+    for _, Object in next, apts:GetChildren() do
+        if Object:IsA("Model") and (table.find(Apartments, tostring(Object)) or table.find(CasinoApartments, tostring(Object))) then
+            local Board = Object:FindFirstChild("Board", true)
+            if Board then
+                local nameLabel = Board:FindFirstChild("name")
+                if nameLabel then
+                    local surfaceGui = nameLabel:FindFirstChild("SurfaceGui")
+                    if surfaceGui then
+                        local textLabel = surfaceGui:FindFirstChild("TextLabel")
+                        if textLabel then
+                            local Text = textLabel.Text
+                            if Text == "VACANT" then table.insert(Available, Object)
+                            elseif Text == Player.Name then table.insert(Owned, Object) end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if #Owned >= 1 then return Owned, "Owned" end
+    return Available, "Not Owned"
+end
+
+local function StartMarshmallowFarm()
+    WaitForReady()
+    Configuration.State.Status = "[APT] Finding apartment"
+    local Apartments, Ownership = FindAvailableApartments()
+    if #Apartments == 0 then
+        Configuration.State.Status = "[APT] None available"
+        return false
+    end
+    local Apartment = Ownership == "Owned" and Apartments[1] or Apartments[Random:NextInteger(1, #Apartments)]
+    local IsHome = tostring(Apartment):match("Home")
+    local map = Workspace:FindFirstChild("Map")
+    if not map then return false end
+    local locations = map:FindFirstChild("Locations")
+    if IsHome then
+        if locations then
+            local apartments = locations:FindFirstChild("Apartments")
+            if apartments then
+                Configuration.State.Apartment = apartments:FindFirstChild(tostring(Apartment))
+            end
+        end
+    else
+        local houses = map:FindFirstChild("Houses")
+        if houses then
+            Configuration.State.Apartment = houses:FindFirstChild(tostring(Apartment))
+        end
+    end
+    if Ownership == "Not Owned" then
+        local Board = Apartment:FindFirstChild("Board", true)
+        if Board then
+            local backboard = Board:FindFirstChild("backboard")
+            if backboard then
+                local Prompt = backboard:FindFirstChild("ProximityPrompt")
+                if Prompt then
+                    pcall(function() Prompt.MaxActivationDistance = 9e9 end)
+                    WaitForReady()
+                    DirtBikeTeleport(backboard.Position)
+                    Configuration.State.Status = "[APT] Purchasing"
+                    fireproximityprompt(Prompt)
+                    task.wait(2)
+                    local nameLabel = Board:FindFirstChild("name")
+                    if nameLabel then
+                        local surfaceGui = nameLabel:FindFirstChild("SurfaceGui")
+                        if surfaceGui then
+                            local textLabel = surfaceGui:FindFirstChild("TextLabel")
+                            if textLabel and textLabel.Text ~= tostring(Player) then
+                                return StartMarshmallowFarm()
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local Door = Apartment:FindFirstChild("Door")
+    if Door then
+        local DoorLock = Door:FindFirstChild("DoorLock")
+        local Interact = Door:FindFirstChild("Interact")
+        if DoorLock and Interact then
+            local LockPart = DoorLock:FindFirstChild("Part")
+            local KnobPrompt = Interact:FindFirstChild("Attachment")
+            if KnobPrompt then KnobPrompt = KnobPrompt:FindFirstChild("ProximityPrompt") end
+            if LockPart and KnobPrompt then
+                if math.abs(LockPart.Rotation.Y) > 5 and math.abs(LockPart.Rotation.Y - 90) > 5 then
+                    WaitForReady()
+                    pcall(function() KnobPrompt.MaxActivationDistance = 9e9 end)
+                    DirtBikeTeleport(LockPart.Position)
+                    Configuration.State.Status = "[APT] Closing door"
+                    task.wait(0.5)
+                    local CloseAttempts = 0
+                    repeat fireproximityprompt(KnobPrompt) task.wait(1) CloseAttempts = CloseAttempts+1 until math.abs(LockPart.Rotation.Y) < 5 or CloseAttempts >= 10
+                    task.wait(0.5)
+                end
+                if LockPart.Rotation.X ~= 90 then
+                    WaitForReady()
+                    local LockPrompt = LockPart:FindFirstChild("ProximityPrompt")
+                    if LockPrompt then
+                        pcall(function() LockPrompt.MaxActivationDistance = 9e9 end)
+                        DirtBikeTeleport(LockPart.Position)
+                        Configuration.State.Status = "[APT] Locking door"
+                        task.wait(0.5)
+                        local LockAttempts = 0
+                        repeat fireproximityprompt(LockPrompt) task.wait(0.5) LockAttempts = LockAttempts+1 until LockPart.Rotation.X == 90 or LockAttempts >= 10
+                        if LockPart.Rotation.X ~= 90 then return StartMarshmallowFarm() end
+                    end
+                end
+            end
+        end
+    end
+    Configuration.State.Status = "[APT] Secured"
+    return true
+end
+
+local function PourWater()
+    WaitForReady()
+    local AptObj = Configuration.State.Apartment
+    if not AptObj then return false end
+    local Stove
+    if tostring(AptObj):match("Home") then Stove = AptObj:FindFirstChild("Cooking Pot")
+    else
+        local Interior = AptObj:FindFirstChild("Interior")
+        if Interior then Stove = Interior:FindFirstChild("Cooking Pot") end
+    end
+    if not Stove then return false end
+    local CookPrompt = Stove:FindFirstChild("Attachment")
+    if CookPrompt then CookPrompt = CookPrompt:FindFirstChild("ProximityPrompt") end
+    DirtBikeTeleport(Stove.Position)
+    Configuration.State.Status = "[MARSH] Pouring water"
+    local Safety = 0
+    repeat
+        WaitForReady()
+        local water = Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Water")
+        if water then EquipTool(water) end
+        DirtBikeTeleport(Stove.Position)
+        if CookPrompt then
+            pcall(function()
+                CookPrompt.MaxActivationDistance = 50
+                CookPrompt.HoldDuration = 0
+            end)
+            fireproximityprompt(CookPrompt)
+        end
+        task.wait(1)
+        UnequipTools()
+        Safety = Safety + 1
+    until not (Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Water")) or Safety >= 10
+    local notif = PlayerGui:FindFirstChild("Main")
+    if notif then
+        notif = notif:FindFirstChild("BasicNotification")
+        if notif and notif.Text == "You do not have permission to cook in this apartment." then
+            return false
+        end
+    end
+    return true
+end
+
+local function AddSugarAndGelatin()
+    WaitForReady()
+    local AptObj = Configuration.State.Apartment
+    if not AptObj then return false end
+    local Stove
+    if tostring(AptObj):match("Home") then Stove = AptObj:FindFirstChild("Cooking Pot")
+    else
+        local Interior = AptObj:FindFirstChild("Interior")
+        if Interior then Stove = Interior:FindFirstChild("Cooking Pot") end
+    end
+    if not Stove then return false end
+    local CookPrompt = Stove:FindFirstChild("Attachment")
+    if CookPrompt then CookPrompt = CookPrompt:FindFirstChild("ProximityPrompt") end
+    Configuration.State.Status = "[MARSH] Adding sugar"
+    local Safety = 0
+    repeat
+        WaitForReady()
+        local sugar = Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Sugar Block Bag")
+        if sugar then EquipTool(sugar) end
+        DirtBikeTeleport(Stove.Position)
+        if CookPrompt then fireproximityprompt(CookPrompt) end
+        task.wait(1)
+        UnequipTools()
+        Safety = Safety + 1
+    until not (Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Sugar Block Bag")) or Safety >= 5
+    Configuration.State.Status = "[MARSH] Adding gelatin"
+    Safety = 0
+    repeat
+        WaitForReady()
+        local gelatin = Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Gelatin")
+        if gelatin then EquipTool(gelatin) end
+        DirtBikeTeleport(Stove.Position)
+        if CookPrompt then fireproximityprompt(CookPrompt) end
+        task.wait(1)
+        UnequipTools()
+        Safety = Safety + 1
+    until not (Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Gelatin")) or Safety >= 5
+end
+
+local function BagMarshmallowAndSell()
+    WaitForReady()
+    local AptObj = Configuration.State.Apartment
+    if not AptObj then return false end
+    local Stove
+    if tostring(AptObj):match("Home") then Stove = AptObj:FindFirstChild("Cooking Pot")
+    else
+        local Interior = AptObj:FindFirstChild("Interior")
+        if Interior then Stove = Interior:FindFirstChild("Cooking Pot") end
+    end
+    if not Stove then return false end
+    local CookPrompt = Stove:FindFirstChild("Attachment")
+    if CookPrompt then CookPrompt = CookPrompt:FindFirstChild("ProximityPrompt") end
+    local StoveTimer
+    local Timer = Stove:FindFirstChild("Timer")
+    if Timer then StoveTimer = Timer:FindFirstChild("TextLabel") end
+    Configuration.State.Status = "[MARSH] Waiting for cook"
+    DirtBikeTeleport(Locations.SafeZone)
+    local waitTime = 0
+    repeat task.wait(1) waitTime = waitTime + 1 if waitTime > 130 then break end until StoveTimer and StoveTimer.Text == "0"
+    DirtBikeTeleport(Stove.Position)
+    Configuration.State.Status = "[MARSH] Bagging"
+    local bagAttempts = 0
+    repeat
+        WaitForReady()
+        local emptyBag = Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Empty Bag")
+        if emptyBag then EquipTool(emptyBag) end
+        task.wait(0.5)
+        if CookPrompt then fireproximityprompt(CookPrompt) end
+        task.wait(0.5)
+        UnequipTools()
+        task.wait(0.25)
+        bagAttempts = bagAttempts + 1
+        if bagAttempts > 20 then break end
+    until (Player:FindFirstChild("Backpack") and (Player.Backpack:FindFirstChild("Small Marshmallow Bag") or Player.Backpack:FindFirstChild("Medium Marshmallow Bag") or Player.Backpack:FindFirstChild("Large Marshmallow Bag")))
+    local lamontAttempts = 0
+    repeat WaitForReady() DirtBikeTeleport(Locations.BuyMarsh) task.wait(0.05) lamontAttempts = lamontAttempts + 1 until Workspace:FindFirstChild("Folders") and Workspace.Folders:FindFirstChild("NPCs") and Workspace.Folders.NPCs:FindFirstChild("Lamont Bell") or lamontAttempts > 20
+    Configuration.State.Status = "[MARSH] Selling"
+    local LamontBell = Workspace:FindFirstChild("Folders") and Workspace.Folders:FindFirstChild("NPCs") and Workspace.Folders.NPCs:FindFirstChild("Lamont Bell")
+    if not LamontBell then return false end
+    local LamontPrompt = LamontBell:FindFirstChild("UpperTorso")
+    if LamontPrompt then LamontPrompt = LamontPrompt:FindFirstChild("ProximityPrompt") end
+    UnequipTools()
+    local backpack = Player:FindFirstChild("Backpack")
+    if not backpack then return false end
+    for _, Object in next, backpack:GetChildren() do
+        if tostring(Object):find("Marshmallow") then
+            WaitForReady()
+            DirtBikeTeleport(Locations.BuyMarsh)
+            EquipTool(Object)
+            task.wait(0.5)
+            if LamontPrompt then fireproximityprompt(LamontPrompt) end
+            task.wait(0.5)
+        end
+    end
+    Configuration.Statistics.MarshmallowsSold = Configuration.Statistics.MarshmallowsSold + 1
+    return true
+end
+
+-- ============================================
+-- POTATO CHIPS FUNCTIONS
+-- ============================================
+local AvailablePot, PotPrompt, PotTimer
+local Labatory = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Locations") and Workspace.Map.Locations:FindFirstChild("The Laboratory")
+
+local function PurchasePotatoIngredients()
+    WaitForReady()
+    local Potato, Flour = ScavengeInventory()
+    if Potato >= 1 and Flour >= 1 then return true end
+    local PotatoRemote = ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("StorePurchase")
+    Configuration.State.Status = "[POTATO] Buying ingredients"
+    DirtBikeTeleport(Locations.BuyPotato)
+    task.wait(0.5)
+    if Flour < 1 then pcall(function() PotatoRemote:FireServer("Flour") end) task.wait(0.5) end
+    if Potato < 1 then pcall(function() PotatoRemote:FireServer("Potato") end) task.wait(0.5) end
+    return true
+end
+
+local function StartPotatoJob()
+    WaitForReady()
+    if not Labatory then return false end
+    local Prompts = Labatory:FindFirstChild("Prompts")
+    if not Prompts then return false end
+    local Clipboard = Prompts:FindFirstChild("Clipboard")
+    if not Clipboard then return false end
+    local ClipboardPrompt = Clipboard:FindFirstChild("ProximityPrompt")
+    if ClipboardPrompt then pcall(function() ClipboardPrompt.MaxActivationDistance = 9e9 end) end
+    DirtBikeTeleport(Locations.Clipboard)
+    Configuration.State.Status = "[POTATO] Claiming task"
+    task.wait(0.5)
+    local Attempts = 0
+    repeat
+        WaitForReady()
+        DirtBikeTeleport(Locations.Clipboard)
+        task.wait(0.25)
+        if ClipboardPrompt then fireproximityprompt(ClipboardPrompt) end
+        task.wait(0.5)
+        Attempts = Attempts + 1
+        if Attempts > 20 then break end
+    until PlayerGui:FindFirstChild("Main") and PlayerGui.Main:FindFirstChild("TaskUpdate") and PlayerGui.Main.TaskUpdate:FindFirstChild("TextLabel") and PlayerGui.Main.TaskUpdate.TextLabel.Text:match("Task:")
+    return true
+end
+
+local function CutPotato()
+    WaitForReady()
+    if not Labatory then return false end
+    local CuttingBoards = Labatory:FindFirstChild("Cutting Boards")
+    if not CuttingBoards then return false end
+    local PotatoCutterModel = CuttingBoards:FindFirstChild("Potato Cutter")
+    if not PotatoCutterModel then return false end
+    local Model = PotatoCutterModel:FindFirstChild("Model")
+    if not Model then return false end
+    local Union = Model:FindFirstChild("Union")
+    if not Union then return false end
+    local CutterPrompt = Union:FindFirstChild("Attachment")
+    if CutterPrompt then CutterPrompt = CutterPrompt:FindFirstChild("ProximityPrompt") end
+    if CutterPrompt then pcall(function() CutterPrompt.MaxActivationDistance = 9e9 end) end
+    Configuration.State.Status = "[POTATO] Cutting"
+    local Safety = 0
+    repeat
+        WaitForReady()
+        DirtBikeTeleport(Locations.PotatoCutter)
+        local potato = Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Potato")
+        if potato then EquipTool(potato) end
+        task.wait(0.25)
+        if CutterPrompt then fireproximityprompt(CutterPrompt) end
+        task.wait(0.5)
+        UnequipTools()
+        task.wait(0.25)
+        Safety = Safety + 1
+        if Safety > 25 then break end
+    until not (Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Potato"))
+    return true
+end
+
+local function BagPotato()
+    WaitForReady()
+    if not Labatory then return false end
+    local Prompts = Labatory:FindFirstChild("Prompts")
+    if not Prompts then return false end
+    local PlasticBag = Prompts:FindFirstChild("Plastic Bag")
+    if not PlasticBag then return false end
+    local BagPrompt = PlasticBag:FindFirstChild("Attachment")
+    if BagPrompt then BagPrompt = BagPrompt:FindFirstChild("ProximityPrompt") end
+    if BagPrompt then pcall(function() BagPrompt.MaxActivationDistance = 9e9 end) end
+    Configuration.State.Status = "[POTATO] Bagging"
+    if Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Potato") then return true end
+    local Safety = 0
+    repeat
+        WaitForReady()
+        DirtBikeTeleport(Locations.PlasticBagLab)
+        task.wait(0.25)
+        if BagPrompt then fireproximityprompt(BagPrompt) end
+        task.wait(0.5)
+        Safety = Safety + 1
+        if Safety >= 20 then break end
+    until PlayerGui:FindFirstChild("Main") and PlayerGui.Main:FindFirstChild("TaskUpdate") and PlayerGui.Main.TaskUpdate:FindFirstChild("TextLabel") and PlayerGui.Main.TaskUpdate.TextLabel.Text:match("Head")
+    return true
+end
+
+local function MixFlourAndPotato()
+    WaitForReady()
+    if not Labatory then return false end
+    local Bowls = Labatory:FindFirstChild("Bowls")
+    if not Bowls then return false end
+    local Bowl = Bowls:FindFirstChildOfClass("UnionOperation")
+    if not Bowl then return false end
+    local BowlPrompt = Bowl:FindFirstChild("ProximityPrompt")
+    if BowlPrompt then pcall(function() BowlPrompt.MaxActivationDistance = 9e9 end) end
+    Configuration.State.Status = "[POTATO] Mixing"
+    local Safety = 0
+    repeat
+        WaitForReady()
+        DirtBikeTeleport(Locations.FlourBowl)
+        task.wait(0.25)
+        local flour = Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Flour")
+        if flour then EquipTool(flour) end
+        task.wait(0.25)
+        if BowlPrompt then fireproximityprompt(BowlPrompt) end
+        task.wait(0.5)
+        UnequipTools()
+        Safety = Safety + 1
+        if Safety >= 20 then break end
+    until not (Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Flour"))
+    task.wait(3.5)
+    return true
+end
+
+local function CookPotatoChips()
+    WaitForReady()
+    if not Labatory then return false end
+    Configuration.State.Status = "[POTATO] Starting cook"
+    AvailablePot = nil
+    local Pots = Labatory:FindFirstChild("Pots")
+    if not Pots then return false end
+    for _, Object in next, Pots:GetChildren() do
+        if AvailablePot then break end
+        if Object:IsA("UnionOperation") then
+            local Safety = 0
+            repeat
+                WaitForReady()
+                DirtBikeTeleport(Object.Position)
+                local prompt = Object:FindFirstChild("ProximityPrompt")
+                if prompt then fireproximityprompt(prompt) end
+                task.wait(0.05)
+                Safety = Safety + 1
+                if Safety > 130 then break end
+            until PlayerGui:FindFirstChild("Main") and PlayerGui.Main:FindFirstChild("BasicNotification") and PlayerGui.Main.BasicNotification.TextTransparency == 0
+            local Notif = PlayerGui:FindFirstChild("Main")
+            if Notif then
+                Notif = Notif:FindFirstChild("BasicNotification")
+                if Notif then
+                    Notif = Notif.Text
+                    if Notif == "This pot is in use." then
+                        repeat task.wait() until PlayerGui.Main.BasicNotification.TextTransparency == 1
+                    elseif Notif == "You have 120 seconds to retrieve your product out of the pot when its done." then
+                        AvailablePot = Object
+                        local Timer = Object:FindFirstChild("Timer")
+                        if Timer then PotTimer = Timer:FindFirstChild("TextLabel") end
+                        PotPrompt = Object:FindFirstChild("ProximityPrompt")
+                    end
+                end
+            end
+        end
+    end
+    return AvailablePot ~= nil
+end
+
+-- ============================================
+-- CLAIM & FEED HOMELESS
+-- ============================================
+local function ClaimPotatoChipsAndSell()
+    WaitForReady()
+    Configuration.State.Status = "[POTATO] Waiting for cook"
+    DirtBikeTeleport(Locations.SafeZone)
+    local waitTime = 0
+    repeat task.wait(1) waitTime = waitTime + 1 if waitTime > 130 then break end until PotTimer and PotTimer.Text == "0"
+
+    Configuration.State.Status = "[POTATO] Claiming from pot"
+    local claimAttempts = 0
+    repeat
+        WaitForReady()
+        DirtBikeTeleport(AvailablePot.Position)
+        if PotPrompt then fireproximityprompt(PotPrompt) end
+        task.wait(0.5)
+        claimAttempts = claimAttempts + 1
+        if claimAttempts > 20 then break end
+    until Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Potato Chips")
+
+    Configuration.State.Status = "[POTATO] Converting to hot chips"
+    local convertAttempts = 0
+    repeat
+        WaitForReady()
+        DirtBikeTeleport(Locations.HotChipsMan)
+        task.wait(0.05)
+        convertAttempts = convertAttempts + 1
+        if convertAttempts > 20 then break end
+    until Workspace:FindFirstChild("Folders") and Workspace.Folders:FindFirstChild("NPCs") and Workspace.Folders.NPCs:FindFirstChild("Poor Guy")
+
+    local PoorGuy = Workspace:FindFirstChild("Folders") and Workspace.Folders:FindFirstChild("NPCs") and Workspace.Folders.NPCs:FindFirstChild("Poor Guy")
+    if not PoorGuy then return false end
+
+    local PoorGuyPrompt = PoorGuy:FindFirstChild("UpperTorso")
+    if PoorGuyPrompt then PoorGuyPrompt = PoorGuyPrompt:FindFirstChild("ProximityPrompt") end
+
+    local hotChipsAttempts = 0
+    repeat
+        WaitForReady()
+        DirtBikeTeleport(Locations.HotChipsMan)
+        if PoorGuyPrompt then
+            pcall(function() PoorGuyPrompt.MaxActivationDistance = 50; PoorGuyPrompt.HoldDuration = 0 end)
+            fireproximityprompt(PoorGuyPrompt)
+        end
+        UnequipTools()
+        task.wait(0.05)
+        hotChipsAttempts = hotChipsAttempts + 1
+        if hotChipsAttempts > 20 then break end
+    until Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Hot Chips")
+
+    task.wait(2)
+
+    local fedCount = 0
+    local maxFeedingAttempts = 50
+
+    while Configuration.Main_Settings.Autofarming and fedCount < maxFeedingAttempts do
+        local hotChips = Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Hot Chips")
+        if not hotChips then break end
+
+        local lastIdx = Configuration.State.LastCoordIndex or 0
+        local nextIdx = (lastIdx % TotalCoords) + 1
+        local coord = HomelessCoords[nextIdx]
+
+        Configuration.State.Status = "[POTATO] Feeding at coord " .. nextIdx .. "/" .. TotalCoords
+
+        local prompt = nil
+        local parts = Workspace:GetDescendants()
+        for _, obj in pairs(parts) do
+            if obj:IsA("ProximityPrompt") then
+                local parentPart = obj.Parent
+                if parentPart and parentPart:IsA("BasePart") then
+                    local distance = (parentPart.Position - coord).Magnitude
+                    if distance < 40 then
+                        prompt = obj
+                        break
+                    end
+                end
+                if not prompt then
+                    local att = obj.Parent
+                    if att and att:IsA("Attachment") then
+                        local part = att.Parent
+                        if part and part:IsA("BasePart") then
+                            local distance = (part.Position - coord).Magnitude
+                            if distance < 40 then
+                                prompt = obj
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        if not prompt then
+            for _, npc in pairs(Workspace:GetChildren()) do
+                if npc:IsA("Model") and npc ~= Player.Character and npc:FindFirstChildOfClass("Humanoid") then
+                    local hum = npc:FindFirstChildOfClass("Humanoid")
+                    if hum and (hum.Sit == true or hum.MoveSpeed == 0) then
+                        local root = npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("UpperTorso")
+                        if root then
+                            local distance = (root.Position - coord).Magnitude
+                            if distance < 40 then
+                                local npcPrompt = root:FindFirstChild("ProximityPrompt")
+                                if not npcPrompt then
+                                    local att = root:FindFirstChild("Attachment")
+                                    if att then npcPrompt = att:FindFirstChild("ProximityPrompt") end
+                                end
+                                if npcPrompt then
+                                    prompt = npcPrompt
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        if prompt then
+            pcall(function()
+                prompt.MaxActivationDistance = 50
+                prompt.HoldDuration = 0
+            end)
+
+            DirtBikeTeleport(coord)
+            task.wait(2)
+
+            local equipSuccess = false
+            for retry = 1, 3 do
+                hotChips = Player:FindFirstChild("Backpack") and Player.Backpack:FindFirstChild("Hot Chips")
+                if hotChips then
+                    EquipTool(hotChips)
+                    task.wait(0.2)
+                    local char = Player.Character
+                    if char and char:FindFirstChild("Hot Chips") then
+                        equipSuccess = true
+                        break
+                    end
+                end
+                task.wait(0.3)
+            end
+
+            if equipSuccess then
+                fireproximityprompt(prompt)
+                task.wait(0.5)
+                UnequipTools()
+                fedCount = fedCount + 1
+                Configuration.Statistics.ChipsFed = Configuration.Statistics.ChipsFed + 1
+                Configuration.State.LastCoordIndex = nextIdx
+                Configuration.State.Status = "[POTATO] Fed at coord " .. nextIdx .. " (" .. fedCount .. " given)"
+            else
+                Configuration.State.Status = "[POTATO] Failed to equip hot chips at coord " .. nextIdx
+                task.wait(1)
+            end
+        else
+            Configuration.State.LastCoordIndex = nextIdx
+            Configuration.State.Status = "[POTATO] No prompt at coord " .. nextIdx .. ", skipping"
+            task.wait(0.5)
+        end
+    end
+
+    Configuration.State.Status = "[POTATO] Feeding done (" .. fedCount .. " chips given)"
+    return true
+end
+
+-- ============================================
+-- ANTI DEATH
+-- ============================================
+local function cekDarah(char)
+    local hum = char:FindFirstChild("Humanoid")
+    if not hum then return end
+    hum.HealthChanged:Connect(function(hp)
+        if not Configuration.Main_Settings.AutoAntiDeath then return end
+        if Configuration.State.RespawnPending then return end
+        if hp > 0 and hp < 95 then
+            Configuration.State.Status = "[HEAL] Teleporting"
+            DirtBikeTeleport(Locations.Healing)
+        end
+    end)
+end
+
+if Player.Character then cekDarah(Player.Character) end
+Player.CharacterAdded:Connect(cekDarah)
+
+-- ============================================
+-- MAIN AUTOFARM CONTROLLER
+-- ============================================
+local AutofarmRunning = false
+
+local function MainAutofarmController()
+    if AutofarmRunning then return end
+    AutofarmRunning = true
+
+    if not Configuration.State.BikeSitting then
+        repeat
+            WaitForReady()
+            SpawnAndSitOnBike()
+            task.wait(1)
+        until Configuration.State.BikeSitting or not Configuration.Main_Settings.Autofarming
+    end
+
+    if Configuration.Main_Settings.Autofarming and not Configuration.State.MaskOwned then
+        BuySkiMask()
+    end
+
+    while Configuration.Main_Settings.Autofarming do
+        WaitForReady()
+
+        local ApartmentOk = StartMarshmallowFarm()
+        if not ApartmentOk then task.wait(5) continue end
+
+        PurchaseMarshmallowIngredients()
+        local WaterOk = PourWater()
+        if not WaterOk then
+            repeat StartMarshmallowFarm(); WaterOk = PourWater() until WaterOk
+        end
+
+        PurchasePotatoIngredients()
+        StartPotatoJob()
+        CutPotato()
+        BagPotato()
+        MixFlourAndPotato()
+        CookPotatoChips()
+        AddSugarAndGelatin()
+        BagMarshmallowAndSell()
+        ClaimPotatoChipsAndSell()
+
+        AvailablePot = nil; PotPrompt = nil; PotTimer = nil
+        Configuration.Statistics.CyclesCompleted = Configuration.Statistics.CyclesCompleted + 1
+    end
+    AutofarmRunning = false
+end
+
+-- ============================================
+-- REJOIN
+-- ============================================
+local function DoRejoin()
+    if not Configuration.Main_Settings.AutoRejoiner then return end
+    Configuration.Main_Settings.Autofarming = false
+    Configuration.Statistics.TimesRejoined = Configuration.Statistics.TimesRejoined + 1
+    TeleportService:Teleport(10179538382)
+end
+
+-- ============================================
+-- UI BARU DENGAN DRAG (menggantikan lilui)
+-- ============================================
+local UIElements = nil
+
+local function CreateModernUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "WANZZUI"
+    gui.Parent = PlayerGui
+
+    -- Main Frame
+    local frame = Instance.new("Frame")
+    frame.Name = "MainFrame"
+    frame.Size = UDim2.new(0, 320, 0, 480)
+    frame.Position = UDim2.new(0, 10, 0, 10)
+    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    frame.BackgroundTransparency = 0.15
+    frame.BorderSizePixel = 0
+    frame.ClipsDescendants = true
+    frame.Parent = gui
+
+    -- Shadow / border
+    local border = Instance.new("Frame")
+    border.Size = UDim2.new(1, 0, 1, 0)
+    border.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    border.BackgroundTransparency = 0.8
+    border.BorderSizePixel = 0
+    border.Parent = frame
+
+    -- Title Bar (drag area)
+    local titleBar = Instance.new("Frame")
+    titleBar.Size = UDim2.new(1, 0, 0, 30)
+    titleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = frame
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Text = "WANZZ MULTIFARM"
+    titleLabel.Size = UDim2.new(1, 0, 1, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextSize = 16
+    titleLabel.TextFont = Enum.Font.SourceSansBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Parent = titleBar
+
+    -- Close button (opsional)
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Text = "✕"
+    closeBtn.Size = UDim2.new(0, 30, 1, 0)
+    closeBtn.Position = UDim2.new(1, -30, 0, 0)
+    closeBtn.BackgroundTransparency = 1
+    closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+    closeBtn.TextSize = 18
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Parent = titleBar
+    closeBtn.MouseButton1Click:Connect(function()
+        gui:Destroy()
+    end)
+
+    -- Dragging logic untuk seluruh frame
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+    local function onInputBegan(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+        end
+    end
+    local function onInputEnded(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end
+    local function onInputChanged(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end
+    titleBar.InputBegan:Connect(onInputBegan)
+    titleBar.InputEnded:Connect(onInputEnded)
+    titleBar.InputChanged:Connect(onInputChanged)
+
+    -- Container untuk konten
+    local content = Instance.new("Frame")
+    content.Size = UDim2.new(1, 0, 1, -30)
+    content.Position = UDim2.new(0, 0, 0, 30)
+    content.BackgroundTransparency = 1
+    content.Parent = frame
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.VerticalAlignment = Enum.VerticalAlignment.Top
+    layout.Padding = UDim.new(0, 6)
+    layout.Parent = content
+
+    -- Fungsi membuat label
+    local function makeLabel(text, size, color)
+        local lbl = Instance.new("TextLabel")
+        lbl.Text = text
+        lbl.Size = UDim2.new(0, 290, 0, 20)
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = color or Color3.fromRGB(220, 220, 230)
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextSize = size or 13
+        lbl.TextFont = Enum.Font.SourceSans
+        lbl.Parent = content
+        return lbl
+    end
+
+    -- Fungsi membuat tombol
+    local function makeButton(text, callback, color, textColor)
+        local btn = Instance.new("TextButton")
+        btn.Text = text
+        btn.Size = UDim2.new(0, 290, 0, 32)
+        btn.BackgroundColor3 = color or Color3.fromRGB(60, 60, 80)
+        btn.TextColor3 = textColor or Color3.fromRGB(255, 255, 255)
+        btn.TextSize = 14
+        btn.TextFont = Enum.Font.SourceSansBold
+        btn.BorderSizePixel = 0
+        btn.Parent = content
+        btn.MouseButton1Click:Connect(callback)
+        return btn
+    end
+
+    -- Title
+    makeLabel("", 0) -- spacer
+
+    -- Autofarm toggle
+    local autofarmBtn = makeButton("[ OFF ] Autofarm", function()
+        local newState = not Configuration.Main_Settings.Autofarming
+        Configuration.Main_Settings.Autofarming = newState
+        autofarmBtn.Text = newState and "[ ON ] Autofarm" or "[ OFF ] Autofarm"
+        autofarmBtn.BackgroundColor3 = newState and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(70, 70, 85)
+        if newState then
+            task.spawn(function()
+                repeat task.wait(0.5) until SpawnAndSitOnBike() or not Configuration.Main_Settings.Autofarming
+                if Configuration.Main_Settings.Autofarming then
+                    MainAutofarmController()
+                end
+            end)
+        end
+    end, Color3.fromRGB(70, 70, 85))
+
+    -- Anti Death toggle
+    local antiDeathBtn = makeButton("Anti Death: ON", function()
+        local newState = not Configuration.Main_Settings.AutoAntiDeath
+        Configuration.Main_Settings.AutoAntiDeath = newState
+        antiDeathBtn.Text = newState and "Anti Death: ON" or "Anti Death: OFF"
+        antiDeathBtn.BackgroundColor3 = newState and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(70, 70, 85)
+    end, Color3.fromRGB(0, 170, 0))
+
+    -- Auto Rejoiner toggle
+    local rejoinBtn = makeButton("Auto Rejoiner: ON", function()
+        local newState = not Configuration.Main_Settings.AutoRejoiner
+        Configuration.Main_Settings.AutoRejoiner = newState
+        rejoinBtn.Text = newState and "Auto Rejoiner: ON" or "Auto Rejoiner: OFF"
+        rejoinBtn.BackgroundColor3 = newState and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(70, 70, 85)
+    end, Color3.fromRGB(0, 170, 0))
+
+    -- Spawn Bike
+    makeButton("Spawn DirtBike ($35K)", function()
+        pcall(function()
+            RPC:FireServer(buffer.fromstring("\001"), "Purchase", "DirtBike")
+        end)
+    end, Color3.fromRGB(80, 80, 180))
+
+    -- Rejoin
+    makeButton("Rejoin Game", function()
+        DoRejoin()
+    end, Color3.fromRGB(180, 70, 70))
+
+    -- Separator
+    local sep = Instance.new("Frame")
+    sep.Size = UDim2.new(0, 290, 0, 2)
+    sep.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
+    sep.Parent = content
+
+    -- Status Labels
+    local statusLabel = makeLabel("📌 Status: Idle", 14)
+    local runtimeLabel = makeLabel("⏰ Runtime: 00:00:00", 14)
+    local cashLabel = makeLabel("💰 Cash: $0", 14)
+    local chipsLabel = makeLabel("🍟 Chips Fed: 0", 14)
+    local marshLabel = makeLabel("🧂 Marshmallows Sold: 0", 14)
+    local rejoinStatLabel = makeLabel("🔄 Times Rejoined: 0", 14)
+    local hotChipsLabel = makeLabel("🔥 Hot Chips Left: 0", 14)
+    local cyclesLabel = makeLabel("🔄 Cycles: 0", 14)
+
+    return {
+        statusLabel = statusLabel,
+        runtimeLabel = runtimeLabel,
+        cashLabel = cashLabel,
+        chipsLabel = chipsLabel,
+        marshLabel = marshLabel,
+        rejoinStatLabel = rejoinStatLabel,
+        hotChipsLabel = hotChipsLabel,
+        cyclesLabel = cyclesLabel,
+    }
+end
+
+-- Buat UI
+pcall(function()
+    UIElements = CreateModernUI()
+end)
+
+-- ============================================
+-- UPDATE STATISTICS
+-- ============================================
+task.spawn(function()
+    local StartTime = os.clock()
+    task.wait(2)
+    local StartCash = GetCurrentCashAmount()
+
+    local function UpdateStats()
+        local Elapsed = math.floor(os.clock() - StartTime)
+        Configuration.Statistics.Runtime = Elapsed
+
+        local currentCash = GetCurrentCashAmount()
+        Configuration.Statistics.CashMade = currentCash - StartCash
+
+        if UIElements then
+            pcall(function()
+                UIElements.statusLabel.Text = "📌 Status: " .. (Configuration.State.Status or "Idle")
+                UIElements.runtimeLabel.Text = "⏰ Runtime: " .. FormatRuntime(Elapsed)
+                UIElements.cashLabel.Text = "💰 Cash: $" .. GetCommaValue(currentCash)
+                UIElements.chipsLabel.Text = "🍟 Chips Fed: " .. Configuration.Statistics.ChipsFed
+                UIElements.marshLabel.Text = "🧂 Marshmallows Sold: " .. Configuration.Statistics.MarshmallowsSold
+                UIElements.rejoinStatLabel.Text = "🔄 Times Rejoined: " .. Configuration.Statistics.TimesRejoined
+                UIElements.hotChipsLabel.Text = "🔥 Hot Chips Left: " .. CountHotChips()
+                UIElements.cyclesLabel.Text = "🔄 Cycles: " .. Configuration.Statistics.CyclesCompleted
+            end)
+        end
+    end
+
+    while true do
+        local success, err = pcall(UpdateStats)
+        if not success then
+            task.wait(5)
+        else
+            task.wait(1)
+        end
+    end
+end)
+
+-- ============================================
+-- AUTO REJOINER SETUP
+-- ============================================
+if getgenv().AutoRejoinerEnabled then
+    getgenv().AutoRejoinerEnabled = nil
+    Configuration.Statistics.TimesRejoined = Configuration.Statistics.TimesRejoined + 1
+    Configuration.Main_Settings.Autofarming = true
+    task.spawn(function()
+        repeat task.wait(0.5) until not PlayerGui:FindFirstChild("IntroUI")
+        task.wait(2)
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Z, false, game)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Z, false, game)
+        repeat task.wait(0.5) until SpawnAndSitOnBike() or not Configuration.Main_Settings.Autofarming
+        if Configuration.Main_Settings.Autofarming then
+            MainAutofarmController()
+        end
+    end)
+end
+
+-- ============================================
+-- STUCK DETECTION
+-- ============================================
+task.spawn(function()
+    local LastCash = 0
+    local LastCashTime = os.clock()
+    local LastStatus = ""
+    local LastStatusTime = os.clock()
+    task.wait(60)
+    LastCash = GetCurrentCashAmount()
+    LastStatus = Configuration.State.Status
+    while task.wait(30) do
+        if not Configuration.Main_Settings.Autofarming then
+            LastCashTime = os.clock()
+            LastStatusTime = os.clock()
+            LastCash = GetCurrentCashAmount()
+            LastStatus = Configuration.State.Status
+            continue
+        end
+        local now = os.clock()
+        local currentCash = GetCurrentCashAmount()
+        local currentStatus = Configuration.State.Status
+        if currentCash ~= LastCash then LastCash = currentCash; LastCashTime = now end
+        if currentStatus ~= LastStatus then LastStatus = currentStatus; LastStatusTime = now end
+        if (now - LastCashTime) >= 300 or (now - LastStatusTime) >= 300 then
+            DoRejoin()
+            return
+        end
+    end
+end)
+
+-- ============================================
+-- DEATH HANDLER
+-- ============================================
+local function ConnectDeathHandler(char)
+    local humanoid = char:FindFirstChild("Humanoid")
+    if not humanoid then return end
+    humanoid.Died:Connect(function()
+        if Configuration.State.RespawnPending then return end
+        if Configuration.Main_Settings.Autofarming and Configuration.Main_Settings.AutoRejoiner then
+            task.wait(3)
+            DoRejoin()
+        end
+    end)
+end
+ConnectDeathHandler(Player.Character)
+Player.CharacterAdded:Connect(ConnectDeathHandler)
+
+-- ============================================
+-- ANTI-AFK
+-- ============================================
+Player.Idled:Connect(function()
+    if Configuration.Main_Settings.Autofarming then
+        local VirtualUser = game:GetService("VirtualUser")
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end
+end)
+
+print("✅ WANZZ MULTIFARM LOADED - UI BARU DENGAN DRAG")
